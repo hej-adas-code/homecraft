@@ -102,7 +102,9 @@ class PlotController extends Controller
             ]);
 
             $body  = trim($response->body());
-            $lines = preg_split('/[\n;]/', $body, -1, PREG_SPLIT_NO_EMPTY);
+
+            // Dziel tylko po \n — NIE po średniku, bo SRID=2180;POLYGON(...) to jedna linia
+            $lines = array_values(array_filter(array_map('trim', explode("\n", $body))));
 
             if (empty($lines) || $lines[0] !== '0') {
                 $msg = $lines[1] ?? 'Nieznany błąd API ULDK';
@@ -116,9 +118,14 @@ class PlotController extends Controller
                 return ['success' => false, 'error' => 'Brak geometrii w odpowiedzi ULDK'];
             }
 
-            $geomUpper = strtoupper(ltrim($geometry));
+            // Usuń prefix SRID jeśli istnieje: "SRID=2180;POLYGON(...)" → "POLYGON(...)"
+            if (preg_match('/^SRID=\d+;(.+)$/i', $geometry, $m)) {
+                $geometry = $m[1];
+            }
+
+            $geomUpper = strtoupper($geometry);
             if (!str_starts_with($geomUpper, 'POLYGON') && !str_starts_with($geomUpper, 'MULTIPOLYGON')) {
-                return ['success' => false, 'error' => 'Nieoczekiwany format geometrii: ' . substr($geometry, 0, 40)];
+                return ['success' => false, 'error' => 'Nieoczekiwany format geometrii: ' . substr($geometry, 0, 60)];
             }
 
             return ['success' => true, 'geometry' => $geometry, 'area' => $area];

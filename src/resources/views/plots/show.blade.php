@@ -142,26 +142,46 @@ function latLngToPuwg92(lat, lng) {
 
 function parseWKTtoLatLng(wkt) {
     if (!wkt) return [];
-    const str = wkt.replace(/\s+/g, ' ').trim().toUpperCase();
-    let coordStr = null;
-    if (str.startsWith('MULTIPOLYGON')) {
-        const m = wkt.match(/\(\(\(([^)]+)\)\)/);
-        if (m) coordStr = m[1];
-    } else {
-        const m = wkt.match(/\(\(([^)]+)\)/);
-        if (m) coordStr = m[1];
-        else {
-            const m2 = wkt.match(/\(([^)]+)\)/);
-            if (m2) coordStr = m2[1];
-        }
-    }
+
+    // Wyciągnij współrzędne pierwszego zewnętrznego ringu
+    // Działa dla: POLYGON((coords)), POLYGON((outer),(hole)),
+    //             MULTIPOLYGON(((coords),...),((coords2),...))
+    const coordStr = extractFirstRing(wkt);
     if (!coordStr) return [];
+
     return coordStr.trim().split(',').map(p => {
         const parts = p.trim().split(/\s+/);
         const x = parseFloat(parts[0]), y = parseFloat(parts[1]);
         if (isNaN(x) || isNaN(y)) return null;
         return puwg92toLatLng(x, y);
     }).filter(Boolean);
+}
+
+function extractFirstRing(wkt) {
+    // Znajdź pierwszy "((..." — początek zewnętrznego ringu
+    const idx = wkt.indexOf('((');
+    if (idx === -1) {
+        // Spróbuj pojedynczego "(..."
+        const m = wkt.match(/\(([^()]+)\)/);
+        return m ? m[1] : null;
+    }
+    // Idź po znakach i zbierz wszystko do pierwszego zamknięcia ")"
+    // po głębokości 2 (otwieramy "((" więc głębokość = 2)
+    let depth = 0;
+    let start = -1;
+    for (let i = idx; i < wkt.length; i++) {
+        if (wkt[i] === '(') {
+            depth++;
+            if (depth === 2) start = i + 1; // zacznij zbierać po "(("
+        } else if (wkt[i] === ')') {
+            depth--;
+            if (depth === 1 && start !== -1) {
+                // Zamknęliśmy pierwszy ring
+                return wkt.substring(start, i);
+            }
+        }
+    }
+    return null;
 }
 
 // Compute approximate centroid (avg) of polygon lat/lng
