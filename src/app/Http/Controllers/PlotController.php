@@ -104,10 +104,14 @@ class PlotController extends Controller
             $body  = trim($response->body());
 
             // Dziel tylko po \n — NIE po średniku, bo SRID=2180;POLYGON(...) to jedna linia
-            $lines = array_values(array_filter(array_map('trim', explode("\n", $body))));
+            // UWAGA: array_filter bez callbacku usuwa "0" (falsy) — używamy strlen
+            $lines = array_values(array_filter(
+                array_map('trim', explode("\n", $body)),
+                fn($l) => strlen($l) > 0
+            ));
 
             if (empty($lines) || $lines[0] !== '0') {
-                $msg = $lines[1] ?? 'Nieznany błąd API ULDK';
+                $msg = $lines[1] ?? ('Kod błędu: ' . ($lines[0] ?? '?'));
                 return ['success' => false, 'error' => $msg];
             }
 
@@ -118,10 +122,14 @@ class PlotController extends Controller
                 return ['success' => false, 'error' => 'Brak geometrii w odpowiedzi ULDK'];
             }
 
-            // Usuń prefix SRID jeśli istnieje: "SRID=2180;POLYGON(...)" → "POLYGON(...)"
+            // Usuń prefix SRID: "SRID=2180;POLYGON(...)" → "POLYGON(...)"
             if (preg_match('/^SRID=\d+;(.+)$/i', $geometry, $m)) {
                 $geometry = $m[1];
             }
+
+            // Usuń trailing "|" (separator pól ULDK)
+            $geometry = rtrim($geometry, '|');
+            $geometry = trim($geometry);
 
             $geomUpper = strtoupper($geometry);
             if (!str_starts_with($geomUpper, 'POLYGON') && !str_starts_with($geomUpper, 'MULTIPOLYGON')) {
