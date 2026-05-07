@@ -243,6 +243,61 @@ function lineIntersect(p1, d1, p2, d2) {
     return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
 }
 
+// ── Detekcja czy dwa odcinki się przecinają ──────────────────────────────────
+function segmentsIntersect(p1, p2, p3, p4) {
+    const d1 = { x: p2.x-p1.x, y: p2.y-p1.y };
+    const d2 = { x: p4.x-p3.x, y: p4.y-p3.y };
+    const cross = d1.x*d2.y - d1.y*d2.x;
+    if (Math.abs(cross) < 1e-10) return false;
+    const dx = p3.x-p1.x, dy = p3.y-p1.y;
+    const t = (dx*d2.y - dy*d2.x) / cross;
+    const u = (dx*d1.y - dy*d1.x) / cross;
+    return t > 1e-9 && t < 1-1e-9 && u > 1e-9 && u < 1-1e-9;
+}
+
+// ── Usuń samoprzecięcia z polygonu: znajdź pierwsze krzyżujące się krawędzie,
+//    wytnij "pętelkę" między nimi, powtarzaj aż polygon będzie czysty ─────────
+function removeSelfIntersections(pts) {
+    let poly = pts.slice();
+    let iterations = 0;
+    while (iterations++ < poly.length * 2) {
+        let found = false;
+        const n = poly.length;
+        outer:
+        for (let i = 0; i < n; i++) {
+            for (let j = i + 2; j < n; j++) {
+                if (i === 0 && j === n - 1) continue; // sąsiednie
+                const A = poly[i], B = poly[(i+1) % n];
+                const C = poly[j], D = poly[(j+1) % n];
+                if (segmentsIntersect(A, B, C, D)) {
+                    // Punkt przecięcia
+                    const d1 = { x: B.x-A.x, y: B.y-A.y };
+                    const d2 = { x: D.x-C.x, y: D.y-C.y };
+                    const cr  = d1.x*d2.y - d1.y*d2.x;
+                    const t   = ((C.x-A.x)*d2.y - (C.y-A.y)*d2.x) / cr;
+                    const ix  = { x: A.x + t*d1.x, y: A.y + t*d1.y };
+                    // Zachowaj tylko część z większą powierzchnią (zewnętrzną pętelkę)
+                    const part1 = [ix, ...poly.slice(i+1, j+1)];
+                    const part2 = [ix, ...poly.slice(j+1), ...poly.slice(0, i+1)];
+                    const area1 = Math.abs(signedArea(part1));
+                    const area2 = Math.abs(signedArea(part2));
+                    poly = area1 >= area2 ? part1 : part2;
+                    found = true;
+                    break outer;
+                }
+            }
+        }
+        if (!found) break;
+    }
+    return poly.length >= 3 ? poly : null;
+}
+
+function signedArea(pts) {
+    return pts.reduce((s, p, i) => {
+        const q = pts[(i+1) % pts.length];
+        return s + p.x * q.y - q.x * p.y;
+    }, 0) / 2;
+}
 // ── Sutherland-Hodgman: przytnij polygon subject do clip polygon ─────────────
 // Clip polygon musi być wypukły (convex). Oba jako tablice {x,y}.
 function shClip(subject, clip) {
@@ -353,6 +408,11 @@ function buildZonePolygon(latlngs) {
 
     if (result.length < 3) return null;
 
+    // 4b. Usuń samoprzecięcia z obliczonego offsetu
+    const zonePtsTmp = result.map(([lat, lng]) => ({ x: lng * mPerLng, y: lat * mPerLat }));
+    const cleanZone  = removeSelfIntersections(zonePtsTmp);
+    if (!cleanZone || cleanZone.length < 3) return null;
+
     // 5. Przytnij do ORYGINALNEGO polygonu działki (z skosami)
     //    Normalizuj do CCW — S-H wymaga CCW clip polygon
     const signedAreaOrig = origPts.reduce((s, p, i) => {
@@ -361,8 +421,7 @@ function buildZonePolygon(latlngs) {
     }, 0);
     const clipForSH = signedAreaOrig < 0 ? [...origPts].reverse() : origPts;
 
-    const zonePts = result.map(([lat, lng]) => ({ x: lng * mPerLng, y: lat * mPerLat }));
-    const clipped = shClip(zonePts, clipForSH);
+    const clipped = shClip(cleanZone, clipForSH);
 
     if (clipped.length >= 3) {
         return clipped.map(p => [p.y / mPerLat, p.x / mPerLng]);
