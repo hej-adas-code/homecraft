@@ -191,43 +191,90 @@ function centroidLatLng(latlngs) {
     return [lat / latlngs.length, lng / latlngs.length];
 }
 
-// Kompas: azymut w stopniach (0=N, 90=E, 180=S, 270=W) → nazwa PL
-function azimuthToName(az) {
-    const dirs = [
-        [337.5, 360,   'Północna'],
-        [0,     22.5,  'Północna'],
-        [22.5,  67.5,  'Północno-wschodnia'],
-        [67.5,  112.5, 'Wschodnia'],
-        [112.5, 157.5, 'Południowo-wschodnia'],
-        [157.5, 202.5, 'Południowa'],
-        [202.5, 247.5, 'Południowo-zachodnia'],
-        [247.5, 292.5, 'Zachodnia'],
-        [292.5, 337.5, 'Północno-zachodnia'],
-    ];
+// Azymut (0=N, 90=E …) → id pola setback
+function azimuthToFieldId(az) {
     const a = ((az % 360) + 360) % 360;
-    for (const [lo, hi, name] of dirs) if (a >= lo && a < hi) return name;
-    return 'Północna';
+    if (a >= 315 || a < 45)  return 'sb_back';   // N
+    if (a >= 45  && a < 135) return 'sb_left';   // E
+    if (a >= 135 && a < 225) return 'sb_front';  // S
+    return 'sb_right';                            // W
 }
 
-// Setback value dla danego kierunku zewnętrznej normalnej krawędzi
+// Setback value dla danego azymutu zewnętrznej normalnej
 function setbackForAzimuth(az) {
-    const a = ((az % 360) + 360) % 360;
-    const front = parseFloat(document.getElementById('sb_front').value) || 0; // S
-    const back  = parseFloat(document.getElementById('sb_back').value)  || 0; // N
-    const left  = parseFloat(document.getElementById('sb_left').value)  || 0; // E
-    const right = parseFloat(document.getElementById('sb_right').value) || 0; // W
+    const id = azimuthToFieldId(az);
+    return parseFloat(document.getElementById(id).value) || 0;
+}
 
-    // Interpoluj kątem: wagi dla czterech kierunków
-    const toRad = d => d * Math.PI / 180;
-    const cos = Math.cos, sin = Math.sin;
-    const na = toRad(a);
-    // wN, wE, wS, wW — składowe kierunków karynalnych
-    const wN = Math.max(0,  cos(na));   // 0°
-    const wE = Math.max(0,  sin(na));   // 90°
-    const wS = Math.max(0, -cos(na));   // 180°
-    const wW = Math.max(0, -sin(na));   // 270°
-    const tot = wN + wE + wS + wW || 1;
-    return (back*wN + left*wE + front*wS + right*wW) / tot;
+// ── Intersection of two infinite lines (p1+t*d1) and (p2+s*d2) ───────────────
+function lineIntersect(p1, d1, p2, d2) {
+    const cross = d1.x * d2.y - d1.y * d2.x;
+    if (Math.abs(cross) < 1e-10) return null; // równoległe
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const t  = (dx * d2.y - dy * d2.x) / cross;
+    return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
+}
+
+// ── Oblicz wielokąt strefy zabudowy (offset polygon z różnymi dist per krawędź)
+function buildZonePolygon(latlngs) {
+    if (latlngs.length < 3) return null;
+
+    const refLat  = latlngs[0][0];
+    const mPerLat = 111320;
+    const mPerLng = 111320 * Math.cos(refLat * Math.PI / 180);
+
+    const pts = latlngs.map(p => ({ x: p[1] * mPerLng, y: p[0] * mPerLat }));
+    const n   = pts.length;
+
+    // Poprawna formuła Gaussa/shoelace
+    let area = 0;
+    for (let i = 0; i < n; i++) {
+        const j = (i+1) % n;
+        area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+    }
+    const isCCW = area > 0;
+
+    // Dla każdej krawędzi oblicz przesuniętą prostą (punkt + kierunek)
+    const offsetEdges = [];
+    for (let i = 0; i < n; i++) {
+        const j  = (i+1) % n;
+        const A  = pts[i], B = pts[j];
+        const dx = B.x - A.x, dy = B.y - A.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 0.5) { offsetEdges.push(null); continue; }
+
+        // Zewnętrzna normalna
+        const outNx = isCCW ?  dy/len : -dy/len;
+        const outNy = isCCW ? -dx/len :  dx/len;
+        const az    = (Math.atan2(outNx, outNy) * 180 / Math.PI + 360) % 360;
+        const dist  = setbackForAzimuth(az);
+
+        // Wewnętrzna normalna
+        const inNx = -outNx, inNy = -outNy;
+
+        offsetEdges.push({
+            p: { x: A.x + inNx * dist, y: A.y + inNy * dist }, // punkt na przesuniętej prostej
+            d: { x: dx, y: dy },                                 // kierunek krawędzi
+        });
+    }
+
+    // Wierzchołki strefy = przecięcia sąsiednich przesuniętych prostych
+    const result = [];
+    for (let i = 0; i < n; i++) {
+        const e1 = offsetEdges[i];
+        const e2 = offsetEdges[(i+1) % n];
+        if (!e1 || !e2) continue;
+
+        const pt = lineIntersect(e1.p, e1.d, e2.p, e2.d);
+        if (pt) {
+            result.push([pt.y / mPerLat, pt.x / mPerLng]);
+        } else {
+            // Równoległe krawędzie — użyj końca e1
+            const end = { x: e1.p.x + e1.d.x, y: e1.p.y + e1.d.y };
+            result.push([end.y / mPerLat, end.x / mPerLng]);
+        }
+    }
+    return result.length >= 3 ? result : null;
 }
 
 // Rotate a set of corners around a center
@@ -275,8 +322,11 @@ window.addEventListener('DOMContentLoaded', () => {
     map = L.map('plotMap', { zoomControl: true });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-        maxZoom: 22
+        maxZoom: 22,
+        keepBuffer: 4,
     }).addTo(map);
+    // Fix: kafelki nie ładują się gdy kontener nie ma wymiaru w chwili init
+    setTimeout(() => map.invalidateSize(), 150);
 
     if (!PLOT_WKT) {
         map.setView([52, 19], 7);
@@ -300,6 +350,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // Auto-fit
     map.fitBounds(plotPolygon.getBounds(), { padding: [40, 40] });
+    setTimeout(() => map.invalidateSize(), 200);
 
     // Centroid
     const center = centroidLatLng(plotLatLngs);
@@ -395,91 +446,109 @@ function updateHouseRect() {
 }
 
 function updateSetbackLayer() {
-    // Usuń stare warstwy
     setbackLayers.forEach(l => map.removeLayer(l));
     setbackLayers = [];
-
     if (!plotLatLngs.length) return;
 
+    // ── Zamknięty wielokąt strefy zabudowy ────────────────────────────────────
+    const zone = buildZonePolygon(plotLatLngs);
+    if (zone && zone.length >= 3) {
+        const zoneLayer = L.polygon(zone, {
+            color: '#f97316',
+            weight: 2,
+            dashArray: '10 6',
+            fillColor: '#fef3c7',
+            fillOpacity: 0.18,
+        }).addTo(map);
+        setbackLayers.push(zoneLayer);
+    }
+
+    // ── Klikalne krawędzie działki — popup z inputem odległości ───────────────
     const refLat  = plotLatLngs[0][0];
     const mPerLat = 111320;
     const mPerLng = 111320 * Math.cos(refLat * Math.PI / 180);
-
-    // Konwersja do metrów lokalnych
-    const pts = plotLatLngs.map(p => ({
-        x: p[1] * mPerLng,  // easting
-        y: p[0] * mPerLat,  // northing
-    }));
-    const n = pts.length;
-
-    // Pole ze znakiem — poprawna formuła Gaussa/shoelace
-    // x=easting (→), y=northing (↑) — standard math coord
-    // CCW polygon ma dodatnie pole
-    let area = 0;
-    for (let i = 0; i < n; i++) {
-        const j = (i+1) % n;
-        area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
-    }
-    const isCCW = area > 0;
+    const n = plotLatLngs.length;
 
     for (let i = 0; i < n; i++) {
         const j = (i+1) % n;
-        const A = pts[i], B = pts[j];
-        const dx = B.x - A.x, dy = B.y - A.y;
+        const A = plotLatLngs[i], B = plotLatLngs[j];
+
+        // Azymut zewnętrznej normalnej tej krawędzi
+        const dx = (B[1] - A[1]) * mPerLng;
+        const dy = (B[0] - A[0]) * mPerLat;
         const len = Math.hypot(dx, dy);
-        if (len < 0.5) continue; // pomijaj bardzo krótkie krawędzie
+        if (len < 0.5) continue;
 
-        // Zewnętrzna normalna — dla CCW prawy obrót: (dy, -dx)/len
-        // Dla CW lewy obrót: (-dy, dx)/len
-        const outNx = isCCW ?  dy/len : -dy/len;
-        const outNy = isCCW ? -dx/len :  dx/len;
+        // Pole z wyznacznikiem orientacji (uproszczone — isCCW z całego polygon)
+        // Liczymy tylko raz, poza pętlą:
+        let area2 = 0;
+        for (let k = 0; k < n; k++) {
+            const l = (k+1) % n;
+            area2 += (plotLatLngs[k][1]*mPerLng) * (plotLatLngs[l][0]*mPerLat)
+                   - (plotLatLngs[l][1]*mPerLng) * (plotLatLngs[k][0]*mPerLat);
+        }
+        const ccw = area2 > 0;
+        const outNx = ccw ?  dy/len : -dy/len;
+        const outNy = ccw ? -dx/len :  dx/len;
+        const az    = (Math.atan2(outNx, outNy) * 180 / Math.PI + 360) % 360;
+        const fieldId = azimuthToFieldId(az);
 
-        // Azymut zewnętrznej normalnej (0=N, 90=E, 180=S, 270=W)
-        // atan2(east, north) = atan2(outNx, outNy)
-        const azimuth = (Math.atan2(outNx, outNy) * 180 / Math.PI + 360) % 360;
-
-        const dist = setbackForAzimuth(azimuth);
-        if (dist <= 0) continue;
-
-        // Wewnętrzna normalna (do środka działki)
-        const inNx = -outNx, inNy = -outNy;
-
-        // Przesuń krawędź do środka
-        const A2 = { x: A.x + inNx * dist, y: A.y + inNy * dist };
-        const B2 = { x: B.x + inNx * dist, y: B.y + inNy * dist };
-
-        const ll_A2 = [A2.y / mPerLat, A2.x / mPerLng];
-        const ll_B2 = [B2.y / mPerLat, B2.x / mPerLng];
-
-        // Linia zabudowy dla tej krawędzi
-        const line = L.polyline([ll_A2, ll_B2], {
-            color: '#f97316', weight: 2.5, dashArray: '10 6', opacity: 0.9,
+        // Gruba niewidoczna linia do klikania
+        const edgeLine = L.polyline([A, B], {
+            color: 'transparent', weight: 12, opacity: 0,
         }).addTo(map);
-        setbackLayers.push(line);
 
-        // Etykieta w środku krawędzi
-        const midLat = (ll_A2[0] + ll_B2[0]) / 2;
-        const midLng = (ll_A2[1] + ll_B2[1]) / 2;
-        const name = azimuthToName(azimuth);
-        const labelIcon = L.divIcon({
-            html: `<div style="
-                background: rgba(249,115,22,0.92);
-                color: #fff;
-                font-size: 10px;
-                font-weight: 600;
-                padding: 2px 6px;
-                border-radius: 4px;
-                white-space: nowrap;
-                box-shadow: 0 1px 3px rgba(0,0,0,.3);
-                pointer-events: none;
-            ">${name} — ${dist}m</div>`,
-            iconSize: [120, 18],
-            iconAnchor: [60, 9],
-            className: '',
+        // Na hover — podświetl
+        edgeLine.on('mouseover', function() {
+            this.setStyle({ color: '#f97316', opacity: 0.5, weight: 8 });
+            this.bindTooltip(
+                `Kliknij, aby ustawić odległość<br>od tej granicy`,
+                { permanent: false, direction: 'auto' }
+            ).openTooltip();
         });
-        const lbl = L.marker([midLat, midLng], { icon: labelIcon, interactive: false }).addTo(map);
-        setbackLayers.push(lbl);
+        edgeLine.on('mouseout', function() {
+            this.setStyle({ color: 'transparent', opacity: 0, weight: 12 });
+            this.unbindTooltip();
+        });
+
+        // Na klik — popup z inputem
+        edgeLine.on('click', function(e) {
+            const current = parseFloat(document.getElementById(fieldId).value) || 0;
+            const fieldLabel = {
+                sb_front: 'Południe (przód)',
+                sb_back:  'Północ (tył)',
+                sb_left:  'Wschód (lewo)',
+                sb_right: 'Zachód (prawo)',
+            }[fieldId] || fieldId;
+
+            const popup = L.popup({ closeButton: true, maxWidth: 240 })
+                .setLatLng(e.latlng)
+                .setContent(`
+                    <div style="font-size:13px;padding:4px 0">
+                        <b style="font-size:12px;color:#92400e">Linia zabudowy — ${fieldLabel}</b><br>
+                        <div style="margin-top:8px;display:flex;align-items:center;gap:6px">
+                            <input id="popupDist" type="number" min="0" max="30" step="0.5"
+                                value="${current}"
+                                style="width:72px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+                            <span style="color:#6b7280;font-size:12px">metrów</span>
+                            <button onclick="applySetback('${fieldId}', document.getElementById('popupDist').value)"
+                                style="padding:4px 10px;background:#f97316;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+                                OK
+                            </button>
+                        </div>
+                    </div>`)
+                .openOn(map);
+        });
+
+        setbackLayers.push(edgeLine);
     }
+}
+
+function applySetback(fieldId, value) {
+    const v = Math.max(0, Math.min(30, parseFloat(value) || 0));
+    document.getElementById(fieldId).value = v;
+    map.closePopup();
+    updateSetbackLayer();
 }
 
 // Oblicz punkt w odległości distM od (lat,lng) w kierunku bearingDeg
