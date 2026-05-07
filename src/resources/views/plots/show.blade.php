@@ -408,28 +408,14 @@ function buildZonePolygon(latlngs) {
 
     if (result.length < 3) return null;
 
-    // 4b. Walidacja: jeśli setbacki za duże → polygon ma ujemne pole → brak strefy
+    // 4b. Walidacja: setbacki za duże → pole strefy zmienia znak → brak strefy
     const zonePtsTmp = result.map(([lat, lng]) => ({ x: lng * mPerLng, y: lat * mPerLat }));
     const zoneArea   = signedArea(zonePtsTmp);
-    // Strefa musi mieć pole tego samego znaku co działka (oba CCW lub oba CW)
     const plotArea2  = signedArea(origPts);
     if (zoneArea === 0 || (zoneArea > 0) !== (plotArea2 > 0)) return null;
-    const cleanZone = zonePtsTmp; // bez modyfikacji — S-H zajmie się resztą
 
-    // 5. Przytnij do ORYGINALNEGO polygonu działki (z skosami)
-    //    Normalizuj do CCW — S-H wymaga CCW clip polygon
-    const signedAreaOrig = origPts.reduce((s, p, i) => {
-        const q = origPts[(i+1) % origPts.length];
-        return s + p.x * q.y - q.x * p.y;
-    }, 0);
-    const clipForSH = signedAreaOrig < 0 ? [...origPts].reverse() : origPts;
-
-    const clipped = shClip(cleanZone, clipForSH);
-
-    if (clipped.length >= 3) {
-        return clipped.map(p => [p.y / mPerLat, p.x / mPerLng]);
-    }
-    return result; // fallback
+    // Zwróć strefę bezpośrednio — zachowujemy dziubki i ostre narożniki
+    return result;
 }
 
 // Rotate a set of corners around a center
@@ -618,81 +604,74 @@ function updateSetbackLayer() {
         setbackLayers.push(zoneLayer);
     }
 
-    // ── Klikalne krawędzie działki — popup z inputem odległości ───────────────
-    const refLat  = plotLatLngs[0][0];
-    const mPerLat = 111320;
-    const mPerLng = 111320 * Math.cos(refLat * Math.PI / 180);
-    const n = plotLatLngs.length;
+    // ── Klikalne krawędzie: klik → popup z odległością + przycisk "Ignoruj" ───
+    const refLat2  = plotLatLngs[0][0];
+    const mPerLat2 = 111320;
+    const mPerLng2 = 111320 * Math.cos(refLat2 * Math.PI / 180);
+    const nEdges   = plotLatLngs.length;
 
-    for (let i = 0; i < n; i++) {
-        const j = (i+1) % n;
+    // Orientacja całego polygonu
+    let areaSign = 0;
+    for (let k = 0; k < nEdges; k++) {
+        const l = (k+1) % nEdges;
+        areaSign += (plotLatLngs[k][1]*mPerLng2) * (plotLatLngs[l][0]*mPerLat2)
+                  - (plotLatLngs[l][1]*mPerLng2) * (plotLatLngs[k][0]*mPerLat2);
+    }
+    const isCCW2 = areaSign > 0;
+
+    for (let i = 0; i < nEdges; i++) {
+        const j = (i+1) % nEdges;
         const A = plotLatLngs[i], B = plotLatLngs[j];
-
-        // Azymut zewnętrznej normalnej tej krawędzi
-        const dx = (B[1] - A[1]) * mPerLng;
-        const dy = (B[0] - A[0]) * mPerLat;
+        const dx = (B[1]-A[1])*mPerLng2, dy = (B[0]-A[0])*mPerLat2;
         const len = Math.hypot(dx, dy);
         if (len < 0.5) continue;
 
-        // Pole z wyznacznikiem orientacji (uproszczone — isCCW z całego polygon)
-        // Liczymy tylko raz, poza pętlą:
-        let area2 = 0;
-        for (let k = 0; k < n; k++) {
-            const l = (k+1) % n;
-            area2 += (plotLatLngs[k][1]*mPerLng) * (plotLatLngs[l][0]*mPerLat)
-                   - (plotLatLngs[l][1]*mPerLng) * (plotLatLngs[k][0]*mPerLat);
-        }
-        const ccw = area2 > 0;
-        const outNx = ccw ?  dy/len : -dy/len;
-        const outNy = ccw ? -dx/len :  dx/len;
+        const outNx = isCCW2 ?  dy/len : -dy/len;
+        const outNy = isCCW2 ? -dx/len :  dx/len;
         const az    = (Math.atan2(outNx, outNy) * 180 / Math.PI + 360) % 360;
         const fieldId = azimuthToFieldId(az);
+        const dirNames = {
+            sb_front: 'Południe', sb_back: 'Północ',
+            sb_left:  'Wschód',   sb_right: 'Zachód',
+        };
+        const dirName = dirNames[fieldId] || '';
 
-        // Gruba niewidoczna linia do klikania
-        const edgeLine = L.polyline([A, B], {
-            color: 'transparent', weight: 12, opacity: 0,
-        }).addTo(map);
+        // Przezroczysta gruba linia — do klikania
+        const edgeLine = L.polyline([A, B], { color: 'transparent', weight: 14, opacity: 0 }).addTo(map);
 
-        // Na hover — podświetl
         edgeLine.on('mouseover', function() {
-            this.setStyle({ color: '#f97316', opacity: 0.5, weight: 8 });
-            this.bindTooltip(
-                `Kliknij, aby ustawić odległość<br>od tej granicy`,
-                { permanent: false, direction: 'auto' }
-            ).openTooltip();
+            this.setStyle({ color: '#f97316', opacity: 0.45, weight: 8 });
         });
         edgeLine.on('mouseout', function() {
-            this.setStyle({ color: 'transparent', opacity: 0, weight: 12 });
-            this.unbindTooltip();
+            this.setStyle({ color: 'transparent', opacity: 0, weight: 14 });
         });
 
-        // Na klik — popup z inputem
         edgeLine.on('click', function(e) {
-            const current = parseFloat(document.getElementById(fieldId).value) || 0;
-            const fieldLabel = {
-                sb_front: 'Południe (przód)',
-                sb_back:  'Północ (tył)',
-                sb_left:  'Wschód (lewo)',
-                sb_right: 'Zachód (prawo)',
-            }[fieldId] || fieldId;
-
-            const popup = L.popup({ closeButton: true, maxWidth: 240 })
+            const cur = parseFloat(document.getElementById(fieldId).value) || 0;
+            L.popup({ closeButton: true, maxWidth: 260 })
                 .setLatLng(e.latlng)
                 .setContent(`
-                    <div style="font-size:13px;padding:4px 0">
-                        <b style="font-size:12px;color:#92400e">Linia zabudowy — ${fieldLabel}</b><br>
-                        <div style="margin-top:8px;display:flex;align-items:center;gap:6px">
-                            <input id="popupDist" type="number" min="0" max="30" step="0.5"
-                                value="${current}"
-                                style="width:72px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
-                            <span style="color:#6b7280;font-size:12px">metrów</span>
-                            <button onclick="applySetback('${fieldId}', document.getElementById('popupDist').value)"
-                                style="padding:4px 10px;background:#f97316;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
-                                OK
+                    <div style="font-size:13px;line-height:1.5">
+                        <b style="color:#92400e">Granica ${dirName}</b><br>
+                        <div style="margin-top:6px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+                            <input id="pd_${fieldId}" type="number" min="0" max="30" step="0.5"
+                                value="${cur}"
+                                style="width:68px;padding:3px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:13px">
+                            <span style="color:#6b7280;font-size:11px">m od granicy</span>
+                        </div>
+                        <div style="margin-top:8px;display:flex;gap:6px">
+                            <button onclick="applySetback('${fieldId}', document.getElementById('pd_${fieldId}').value)"
+                                style="flex:1;padding:5px;background:#f97316;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;font-weight:600">
+                                Zastosuj
+                            </button>
+                            <button onclick="applySetback('${fieldId}', 0)"
+                                style="flex:1;padding:5px;background:#e5e7eb;color:#374151;border:none;border-radius:5px;cursor:pointer;font-size:12px">
+                                Ignoruj
                             </button>
                         </div>
                     </div>`)
                 .openOn(map);
+            L.DomEvent.stopPropagation(e);
         });
 
         setbackLayers.push(edgeLine);
