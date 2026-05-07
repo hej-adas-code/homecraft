@@ -206,75 +206,37 @@ function setbackForAzimuth(az) {
     return parseFloat(document.getElementById(id).value) || 0;
 }
 
-// ── Intersection of two infinite lines (p1+t*d1) and (p2+s*d2) ───────────────
-function lineIntersect(p1, d1, p2, d2) {
-    const cross = d1.x * d2.y - d1.y * d2.x;
-    if (Math.abs(cross) < 1e-10) return null; // równoległe
-    const dx = p2.x - p1.x, dy = p2.y - p1.y;
-    const t  = (dx * d2.y - dy * d2.x) / cross;
-    return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
-}
-
-// ── Oblicz wielokąt strefy zabudowy (offset polygon z różnymi dist per krawędź)
+// ── Strefa zabudowy jako prostokąt oparty na bounding box działki ─────────────
+// Ignoruje skosy i nieregularności — linie zawsze równoległe do N/S/E/W
 function buildZonePolygon(latlngs) {
     if (latlngs.length < 3) return null;
 
-    const refLat  = latlngs[0][0];
+    const lats = latlngs.map(p => p[0]);
+    const lngs = latlngs.map(p => p[1]);
+    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+
     const mPerLat = 111320;
-    const mPerLng = 111320 * Math.cos(refLat * Math.PI / 180);
+    const mPerLng = 111320 * Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
 
-    const pts = latlngs.map(p => ({ x: p[1] * mPerLng, y: p[0] * mPerLat }));
-    const n   = pts.length;
+    const front = parseFloat(document.getElementById('sb_front').value) || 0; // S
+    const back  = parseFloat(document.getElementById('sb_back').value)  || 0; // N
+    const left  = parseFloat(document.getElementById('sb_left').value)  || 0; // E
+    const right = parseFloat(document.getElementById('sb_right').value) || 0; // W
 
-    // Poprawna formuła Gaussa/shoelace
-    let area = 0;
-    for (let i = 0; i < n; i++) {
-        const j = (i+1) % n;
-        area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
-    }
-    const isCCW = area > 0;
+    const zoneS = minLat + front / mPerLat;
+    const zoneN = maxLat - back  / mPerLat;
+    const zoneE = maxLng - left  / mPerLng;
+    const zoneW = minLng + right / mPerLng;
 
-    // Dla każdej krawędzi oblicz przesuniętą prostą (punkt + kierunek)
-    const offsetEdges = [];
-    for (let i = 0; i < n; i++) {
-        const j  = (i+1) % n;
-        const A  = pts[i], B = pts[j];
-        const dx = B.x - A.x, dy = B.y - A.y;
-        const len = Math.hypot(dx, dy);
-        if (len < 0.5) { offsetEdges.push(null); continue; }
+    if (zoneS >= zoneN || zoneW >= zoneE) return null;
 
-        // Zewnętrzna normalna
-        const outNx = isCCW ?  dy/len : -dy/len;
-        const outNy = isCCW ? -dx/len :  dx/len;
-        const az    = (Math.atan2(outNx, outNy) * 180 / Math.PI + 360) % 360;
-        const dist  = setbackForAzimuth(az);
-
-        // Wewnętrzna normalna
-        const inNx = -outNx, inNy = -outNy;
-
-        offsetEdges.push({
-            p: { x: A.x + inNx * dist, y: A.y + inNy * dist }, // punkt na przesuniętej prostej
-            d: { x: dx, y: dy },                                 // kierunek krawędzi
-        });
-    }
-
-    // Wierzchołki strefy = przecięcia sąsiednich przesuniętych prostych
-    const result = [];
-    for (let i = 0; i < n; i++) {
-        const e1 = offsetEdges[i];
-        const e2 = offsetEdges[(i+1) % n];
-        if (!e1 || !e2) continue;
-
-        const pt = lineIntersect(e1.p, e1.d, e2.p, e2.d);
-        if (pt) {
-            result.push([pt.y / mPerLat, pt.x / mPerLng]);
-        } else {
-            // Równoległe krawędzie — użyj końca e1
-            const end = { x: e1.p.x + e1.d.x, y: e1.p.y + e1.d.y };
-            result.push([end.y / mPerLat, end.x / mPerLng]);
-        }
-    }
-    return result.length >= 3 ? result : null;
+    return [
+        [zoneN, zoneW],
+        [zoneN, zoneE],
+        [zoneS, zoneE],
+        [zoneS, zoneW],
+    ];
 }
 
 // Rotate a set of corners around a center
