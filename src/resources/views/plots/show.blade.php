@@ -408,10 +408,13 @@ function buildZonePolygon(latlngs) {
 
     if (result.length < 3) return null;
 
-    // 4b. Usuń samoprzecięcia z obliczonego offsetu
+    // 4b. Walidacja: jeśli setbacki za duże → polygon ma ujemne pole → brak strefy
     const zonePtsTmp = result.map(([lat, lng]) => ({ x: lng * mPerLng, y: lat * mPerLat }));
-    const cleanZone  = removeSelfIntersections(zonePtsTmp);
-    if (!cleanZone || cleanZone.length < 3) return null;
+    const zoneArea   = signedArea(zonePtsTmp);
+    // Strefa musi mieć pole tego samego znaku co działka (oba CCW lub oba CW)
+    const plotArea2  = signedArea(origPts);
+    if (zoneArea === 0 || (zoneArea > 0) !== (plotArea2 > 0)) return null;
+    const cleanZone = zonePtsTmp; // bez modyfikacji — S-H zajmie się resztą
 
     // 5. Przytnij do ORYGINALNEGO polygonu działki (z skosami)
     //    Normalizuj do CCW — S-H wymaga CCW clip polygon
