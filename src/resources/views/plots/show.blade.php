@@ -206,37 +206,98 @@ function setbackForAzimuth(az) {
     return parseFloat(document.getElementById(id).value) || 0;
 }
 
-// ── Strefa zabudowy jako prostokąt oparty na bounding box działki ─────────────
-// Ignoruje skosy i nieregularności — linie zawsze równoległe do N/S/E/W
+// ── Uproszczenie polygonu — usuwa krótkie krawędzie (skosy, ścięcia naroży) ───
+function simplifyPolygon(pts) {
+    const n = pts.length;
+    if (n < 3) return pts;
+
+    // Długości wszystkich krawędzi
+    const lens = pts.map((p, i) => {
+        const q = pts[(i+1) % n];
+        return Math.hypot(q.x - p.x, q.y - p.y);
+    });
+
+    // Próg: max z (3m  lub  max_setback × 2)
+    const maxSb = Math.max(
+        parseFloat(document.getElementById('sb_front').value) || 0,
+        parseFloat(document.getElementById('sb_back').value)  || 0,
+        parseFloat(document.getElementById('sb_left').value)  || 0,
+        parseFloat(document.getElementById('sb_right').value) || 0,
+    );
+    const threshold = Math.max(3, maxSb * 2);
+
+    // Usuń wierzchołki, z których wychodzi krótka krawędź
+    let result = pts.filter((_, i) => lens[i] >= threshold);
+    return result.length >= 3 ? result : pts; // fallback gdy za agresywne
+}
+
+// ── Przecięcie dwóch nieskończonych prostych ─────────────────────────────────
+function lineIntersect(p1, d1, p2, d2) {
+    const cross = d1.x * d2.y - d1.y * d2.x;
+    if (Math.abs(cross) < 1e-10) {
+        // Równoległe — zwróć punkt pośredni
+        return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    }
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const t  = (dx * d2.y - dy * d2.x) / cross;
+    return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
+}
+
+// ── Strefa zabudowy: per-edge offset na uproszczonym polygonie ────────────────
 function buildZonePolygon(latlngs) {
     if (latlngs.length < 3) return null;
 
-    const lats = latlngs.map(p => p[0]);
-    const lngs = latlngs.map(p => p[1]);
-    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-    const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-
+    const refLat  = latlngs[0][0];
     const mPerLat = 111320;
-    const mPerLng = 111320 * Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
+    const mPerLng = 111320 * Math.cos(refLat * Math.PI / 180);
 
-    const front = parseFloat(document.getElementById('sb_front').value) || 0; // S
-    const back  = parseFloat(document.getElementById('sb_back').value)  || 0; // N
-    const left  = parseFloat(document.getElementById('sb_left').value)  || 0; // E
-    const right = parseFloat(document.getElementById('sb_right').value) || 0; // W
+    // Konwersja do metrów lokalnych
+    let pts = latlngs.map(p => ({ x: p[1] * mPerLng, y: p[0] * mPerLat }));
 
-    const zoneS = minLat + front / mPerLat;
-    const zoneN = maxLat - back  / mPerLat;
-    const zoneE = maxLng - left  / mPerLng;
-    const zoneW = minLng + right / mPerLng;
+    // 1. Uprość — usuń skosy (krótkie krawędzie)
+    pts = simplifyPolygon(pts);
+    const n = pts.length;
+    if (n < 3) return null;
 
-    if (zoneS >= zoneN || zoneW >= zoneE) return null;
+    // 2. Orientacja (shoelace)
+    let area = 0;
+    for (let i = 0; i < n; i++) {
+        const j = (i+1) % n;
+        area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+    }
+    const isCCW = area > 0;
 
-    return [
-        [zoneN, zoneW],
-        [zoneN, zoneE],
-        [zoneS, zoneE],
-        [zoneS, zoneW],
-    ];
+    // 3. Dla każdej krawędzi: przesunięta prosta (p + kierunek)
+    const offEdges = pts.map((A, i) => {
+        const B   = pts[(i+1) % n];
+        const dx  = B.x - A.x, dy = B.y - A.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 0.1) return null;
+
+        // Zewnętrzna normalna
+        const outNx = isCCW ?  dy/len : -dy/len;
+        const outNy = isCCW ? -dx/len :  dx/len;
+        const az    = (Math.atan2(outNx, outNy) * 180 / Math.PI + 360) % 360;
+        const dist  = setbackForAzimuth(az);
+
+        // Wewnętrzna normalna × dist
+        return {
+            p: { x: A.x - outNx * dist, y: A.y - outNy * dist },
+            d: { x: dx, y: dy },
+        };
+    });
+
+    // 4. Wierzchołki strefy = przecięcia sąsiednich przesuniętych prostych
+    const result = [];
+    for (let i = 0; i < n; i++) {
+        const e1 = offEdges[i];
+        const e2 = offEdges[(i+1) % n];
+        if (!e1 || !e2) continue;
+        const pt = lineIntersect(e1.p, e1.d, e2.p, e2.d);
+        result.push([pt.y / mPerLat, pt.x / mPerLng]);
+    }
+
+    return result.length >= 3 ? result : null;
 }
 
 // Rotate a set of corners around a center
