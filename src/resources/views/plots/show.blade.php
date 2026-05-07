@@ -290,6 +290,7 @@ function buildZonePolygon(latlngs) {
     let pts = latlngs.map(p => ({ x: p[1] * mPerLng, y: p[0] * mPerLat }));
 
     // 1. Uprość — usuń skosy (krótkie krawędzie)
+    const origPts = pts.map(p => ({ x: p.x, y: p.y })); // oryginał do clippingu
     pts = simplifyPolygon(pts);
     const n = pts.length;
     if (n < 3) return null;
@@ -323,27 +324,50 @@ function buildZonePolygon(latlngs) {
     });
 
     // 4. Wierzchołki strefy = przecięcia sąsiednich przesuniętych prostych
+    //    + clamp: nie pozwól wierzchołkowi odejść dalej niż maxSb*4 od oryginału
+    const maxSb = Math.max(
+        parseFloat(document.getElementById('sb_front').value) || 0,
+        parseFloat(document.getElementById('sb_back').value)  || 0,
+        parseFloat(document.getElementById('sb_left').value)  || 0,
+        parseFloat(document.getElementById('sb_right').value) || 0,
+    );
+    const clampDist = Math.max(maxSb * 4, 1);
+
     const result = [];
     for (let i = 0; i < n; i++) {
         const e1 = offEdges[i];
         const e2 = offEdges[(i+1) % n];
         if (!e1 || !e2) continue;
-        const pt = lineIntersect(e1.p, e1.d, e2.p, e2.d);
+        let pt = lineIntersect(e1.p, e1.d, e2.p, e2.d);
+
+        // Clamp: jeśli przecięcie jest zbyt daleko od oryginalnego wierzchołka
+        const orig = pts[i];
+        const d = Math.hypot(pt.x - orig.x, pt.y - orig.y);
+        if (d > clampDist) {
+            const s = clampDist / d;
+            pt = { x: orig.x + (pt.x - orig.x) * s, y: orig.y + (pt.y - orig.y) * s };
+        }
+
         result.push([pt.y / mPerLat, pt.x / mPerLng]);
     }
 
     if (result.length < 3) return null;
 
-    // 5. Przytnij strefę do oryginalnego polygonu (naprawia wystające rogi)
-    //    Konwertuj latlngs do {x,y} w metrach dla clippera
-    const clipPts = pts.map(p => ({ x: p.x, y: p.y }));
-    const zonePts = result.map(([lat, lng]) => ({
-        x: lng * mPerLng, y: lat * mPerLat,
-    }));
-    const clipped = shClip(zonePts, clipPts);
-    if (clipped.length < 3) return result; // fallback
+    // 5. Przytnij do ORYGINALNEGO polygonu działki (z skosami)
+    //    Normalizuj do CCW — S-H wymaga CCW clip polygon
+    const signedAreaOrig = origPts.reduce((s, p, i) => {
+        const q = origPts[(i+1) % origPts.length];
+        return s + p.x * q.y - q.x * p.y;
+    }, 0);
+    const clipForSH = signedAreaOrig < 0 ? [...origPts].reverse() : origPts;
 
-    return clipped.map(p => [p.y / mPerLat, p.x / mPerLng]);
+    const zonePts = result.map(([lat, lng]) => ({ x: lng * mPerLng, y: lat * mPerLat }));
+    const clipped = shClip(zonePts, clipForSH);
+
+    if (clipped.length >= 3) {
+        return clipped.map(p => [p.y / mPerLat, p.x / mPerLng]);
+    }
+    return result; // fallback
 }
 
 // Rotate a set of corners around a center
