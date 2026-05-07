@@ -243,6 +243,41 @@ function lineIntersect(p1, d1, p2, d2) {
     return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
 }
 
+// ── Sutherland-Hodgman: przytnij polygon subject do clip polygon ─────────────
+// Clip polygon musi być wypukły (convex). Oba jako tablice {x,y}.
+function shClip(subject, clip) {
+    let output = [...subject];
+    const n = clip.length;
+    for (let i = 0; i < n && output.length > 0; i++) {
+        const A = clip[i], B = clip[(i+1) % n];
+        const input = output;
+        output = [];
+        for (let j = 0; j < input.length; j++) {
+            const P = input[j];
+            const Q = input[(j+1) % input.length];
+            const insP = shInside(P, A, B);
+            const insQ = shInside(Q, A, B);
+            if (insP) {
+                output.push(P);
+                if (!insQ) { const x = shCross(P, Q, A, B); if (x) output.push(x); }
+            } else if (insQ) {
+                const x = shCross(P, Q, A, B); if (x) output.push(x);
+            }
+        }
+    }
+    return output;
+}
+function shInside(P, A, B) {
+    return (B.x - A.x) * (P.y - A.y) - (B.y - A.y) * (P.x - A.x) >= -1e-9;
+}
+function shCross(P, Q, A, B) {
+    const d1 = { x: Q.x-P.x, y: Q.y-P.y };
+    const d2 = { x: B.x-A.x, y: B.y-A.y };
+    const cr  = d1.x*d2.y - d1.y*d2.x;
+    if (Math.abs(cr) < 1e-12) return null;
+    const t = ((A.x-P.x)*d2.y - (A.y-P.y)*d2.x) / cr;
+    return { x: P.x + t*d1.x, y: P.y + t*d1.y };
+}
 // ── Strefa zabudowy: per-edge offset na uproszczonym polygonie ────────────────
 function buildZonePolygon(latlngs) {
     if (latlngs.length < 3) return null;
@@ -297,7 +332,18 @@ function buildZonePolygon(latlngs) {
         result.push([pt.y / mPerLat, pt.x / mPerLng]);
     }
 
-    return result.length >= 3 ? result : null;
+    if (result.length < 3) return null;
+
+    // 5. Przytnij strefę do oryginalnego polygonu (naprawia wystające rogi)
+    //    Konwertuj latlngs do {x,y} w metrach dla clippera
+    const clipPts = pts.map(p => ({ x: p.x, y: p.y }));
+    const zonePts = result.map(([lat, lng]) => ({
+        x: lng * mPerLng, y: lat * mPerLat,
+    }));
+    const clipped = shClip(zonePts, clipPts);
+    if (clipped.length < 3) return result; // fallback
+
+    return clipped.map(p => [p.y / mPerLat, p.x / mPerLng]);
 }
 
 // Rotate a set of corners around a center
