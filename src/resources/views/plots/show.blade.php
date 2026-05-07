@@ -259,7 +259,7 @@ function buildHouseCorners(lat, lng, wMeters, hMeters, rotDeg) {
 // ================================================================
 // Map setup
 // ================================================================
-let map, plotPolygon, setbackPolygon, houseLayer, houseMarker, pvArrow;
+let map, plotPolygon, setbackPolygon, houseLayer, houseMarker;
 let houseLat = null, houseLng = null;
 let plotLatLngs = [];
 
@@ -327,9 +327,11 @@ function updatePvInfo(lat) {
     const optTilt = Math.round(lat - 5);
     document.getElementById('pvInfo').innerHTML =
         `<strong>Szerokość geogr.:</strong> ~${lat.toFixed(1)}°N<br>` +
-        `<strong>Optymalny azymut:</strong> 180° (południe)<br>` +
-        `<strong>Optymalny kąt paneli:</strong> ${optTilt}–${optTilt+8}°<br>` +
-        `<span class="text-xs">Strzałka żółta = kierunek S</span>`;
+        `<strong>Optymalny kąt paneli:</strong> ${optTilt}–${optTilt+8}°<br><br>` +
+        `<span class="text-xs font-semibold text-amber-700">Sektory na mapie:</span><br>` +
+        `<span class="text-xs">🟢 &gt;95% — południe ±25°</span><br>` +
+        `<span class="text-xs">🟡 85–95% — ±45° (SE/SW)</span><br>` +
+        `<span class="text-xs">🟠 70–85% — ±65° (ESE/WSW)</span>`;
 }
 
 function buildHouseLayer() {
@@ -411,38 +413,96 @@ function updateSetbackLayer() {
     }).addTo(map);
 }
 
+// Oblicz punkt w odległości distM od (lat,lng) w kierunku bearingDeg
+function destPoint(lat, lng, bearingDeg, distM) {
+    const R   = 6371000;
+    const d   = distM / R;
+    const brg = bearingDeg * Math.PI / 180;
+    const φ1  = lat * Math.PI / 180;
+    const λ1  = lng * Math.PI / 180;
+    const φ2  = Math.asin(Math.sin(φ1)*Math.cos(d) + Math.cos(φ1)*Math.sin(d)*Math.cos(brg));
+    const λ2  = λ1 + Math.atan2(Math.sin(brg)*Math.sin(d)*Math.cos(φ1), Math.cos(d)-Math.sin(φ1)*Math.sin(φ2));
+    return [φ2 * 180/Math.PI, λ2 * 180/Math.PI];
+}
+
+// Punkty sektora kołowego (do L.polygon)
+function sectorPoints(lat, lng, radiusM, startBrg, endBrg, steps) {
+    steps = steps || 32;
+    const pts = [[lat, lng]];
+    for (let i = 0; i <= steps; i++) {
+        const brg = startBrg + (endBrg - startBrg) * i / steps;
+        pts.push(destPoint(lat, lng, brg, radiusM));
+    }
+    return pts;
+}
+
+let pvLayers = [];
+
 function buildPvArrow(lat, lng) {
-    if (pvArrow) map.removeLayer(pvArrow);
+    // Usuń poprzednie warstwy PV
+    pvLayers.forEach(l => map.removeLayer(l));
+    pvLayers = [];
 
-    const mPerLat = 111320;
-    const arrowLenM = 30;
+    // Radius = 30% szerokości działki, min 15m, max 80m
+    let radius = 40;
+    if (plotLatLngs.length > 1) {
+        const lats = plotLatLngs.map(p => p[0]);
+        const lngs = plotLatLngs.map(p => p[1]);
+        const mPerLat = 111320;
+        const mPerLng = 111320 * Math.cos(lat * Math.PI / 180);
+        const plotW   = (Math.max(...lngs) - Math.min(...lngs)) * mPerLng;
+        const plotH   = (Math.max(...lats) - Math.min(...lats)) * mPerLat;
+        radius = Math.max(15, Math.min(80, Math.max(plotW, plotH) * 0.28));
+    }
 
-    // South = decrease lat
-    const endLat = lat - arrowLenM / mPerLat;
-
-    pvArrow = L.polyline([[lat, lng], [endLat, lng]], {
-        color: '#fbbf24',
-        weight: 3,
-        dashArray: null,
+    // Sektory od zewnątrz do środka (rysujemy od najszerszego)
+    // Strefa 3: ±65° (115°-245°) — 70-85%, pomarańczowy
+    const s3 = L.polygon(sectorPoints(lat, lng, radius, 115, 245), {
+        color: 'transparent', fillColor: '#fb923c', fillOpacity: 0.25,
     }).addTo(map);
+    pvLayers.push(s3);
 
-    // Arrow head marker
-    const arrowIcon = L.divIcon({
-        html: `<div style="font-size:16px;line-height:1;">▼</div>`,
-        iconSize: [16, 16],
-        iconAnchor: [8, 8],
-        className: '',
-    });
-    L.marker([endLat, lng], { icon: arrowIcon, interactive: false }).addTo(map);
+    // Strefa 2: ±45° (135°-225°) — 85-95%, żółtozielony
+    const s2 = L.polygon(sectorPoints(lat, lng, radius, 135, 225), {
+        color: 'transparent', fillColor: '#facc15', fillOpacity: 0.30,
+    }).addTo(map);
+    pvLayers.push(s2);
 
-    // Sun label
-    const sunIcon = L.divIcon({
-        html: `<div style="font-size:14px;line-height:1;" title="Południe (optymalne PV)">☀️</div>`,
-        iconSize: [16, 16],
-        iconAnchor: [8, 16],
-        className: '',
+    // Strefa 1: ±25° (155°-205°) — >95%, zielony
+    const s1 = L.polygon(sectorPoints(lat, lng, radius, 155, 205), {
+        color: 'transparent', fillColor: '#4ade80', fillOpacity: 0.45,
+    }).addTo(map);
+    pvLayers.push(s1);
+
+    // Linia południa — optymum (180°)
+    const southPt = destPoint(lat, lng, 180, radius);
+    const arrow = L.polyline([[lat, lng], southPt], {
+        color: '#16a34a', weight: 2.5, dashArray: '6 3',
+    }).addTo(map);
+    pvLayers.push(arrow);
+
+    // Etykieta optimum
+    const southLabel = L.divIcon({
+        html: `<div style="background:#16a34a;color:#fff;font-size:10px;font-weight:600;padding:1px 5px;border-radius:4px;white-space:nowrap;">S 180° ☀️</div>`,
+        iconSize: [70, 18], iconAnchor: [35, -2], className: '',
     });
-    L.marker([lat, lng], { icon: sunIcon, interactive: false }).addTo(map);
+    const lbl = L.marker(southPt, { icon: southLabel, interactive: false }).addTo(map);
+    pvLayers.push(lbl);
+
+    // Etykiety kątowe na brzegach sektora
+    [
+        [115, '-65°\n70%', '#fb923c'],
+        [135, '-45°\n85%', '#ca8a04'],
+        [225, '+45°\n85%', '#ca8a04'],
+        [245, '+65°\n70%', '#fb923c'],
+    ].forEach(([brg, txt, color]) => {
+        const pt  = destPoint(lat, lng, brg, radius * 1.08);
+        const ico = L.divIcon({
+            html: `<div style="color:${color};font-size:9px;font-weight:600;white-space:nowrap;line-height:1.2;">${txt.replace('\n','<br>')}</div>`,
+            iconSize: [40, 24], iconAnchor: [20, 12], className: '',
+        });
+        pvLayers.push(L.marker(pt, { icon: ico, interactive: false }).addTo(map));
+    });
 }
 
 function updateHouseInfo() {

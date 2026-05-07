@@ -155,7 +155,6 @@
 </div>
 
 {{-- Ostatnie aktywności (oś czasu) --}}
-@if($recentTimeline->isNotEmpty())
 <div class="mt-8 bg-white rounded-xl border border-gray-200 p-5">
     <div class="flex items-center justify-between mb-4">
         <h2 class="font-semibold text-gray-800">Ostatnie aktywności</h2>
@@ -172,7 +171,10 @@
         'photo'       => ['color' => 'bg-pink-500',   'label' => 'Zdjęcie',  'icon' => '📷'],
     ];
     @endphp
-    <div class="space-y-3">
+    @if($recentTimeline->isEmpty())
+        <p class="text-sm text-gray-400 text-center py-4">Brak aktywności.<br><span class="text-xs">Zacznij od dodania pozycji budżetu, dokumentu lub etapu harmonogramu.</span></p>
+    @else
+        <div class="space-y-3">
         @foreach($recentTimeline as $entry)
         @php $cfg = $typeConfig[$entry->type] ?? $typeConfig['note']; @endphp
         <div class="flex items-center gap-3">
@@ -185,11 +187,10 @@
             </div>
         </div>
         @endforeach
-    </div>
+        </div>
+    @endif
     <div class="mt-3 pt-3 border-t border-gray-100">
         <a href="{{ route('timeline') }}" class="text-xs text-indigo-600 hover:underline">Zobacz pełną oś czasu →</a>
     </div>
 </div>
-@endif
-
 </x-layouts.app>
