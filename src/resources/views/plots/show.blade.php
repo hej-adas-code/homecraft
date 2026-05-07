@@ -191,56 +191,43 @@ function centroidLatLng(latlngs) {
     return [lat / latlngs.length, lng / latlngs.length];
 }
 
-// Compute inward offset polygon (shrink) — in WGS84 degrees
-// We use a simple per-edge offset approach in metric space
-function offsetPolygonWGS84(latlngs, distMeters) {
-    // Convert to approx meters for offset calc, then back
-    if (latlngs.length < 3 || distMeters <= 0) return latlngs;
+// Kompas: azymut w stopniach (0=N, 90=E, 180=S, 270=W) → nazwa PL
+function azimuthToName(az) {
+    const dirs = [
+        [337.5, 360,   'Północna'],
+        [0,     22.5,  'Północna'],
+        [22.5,  67.5,  'Północno-wschodnia'],
+        [67.5,  112.5, 'Wschodnia'],
+        [112.5, 157.5, 'Południowo-wschodnia'],
+        [157.5, 202.5, 'Południowa'],
+        [202.5, 247.5, 'Południowo-zachodnia'],
+        [247.5, 292.5, 'Zachodnia'],
+        [292.5, 337.5, 'Północno-zachodnia'],
+    ];
+    const a = ((az % 360) + 360) % 360;
+    for (const [lo, hi, name] of dirs) if (a >= lo && a < hi) return name;
+    return 'Północna';
+}
 
-    const refLat = latlngs[0][0];
-    const mPerLat = 111320;
-    const mPerLng = 111320 * Math.cos(refLat * Math.PI / 180);
+// Setback value dla danego kierunku zewnętrznej normalnej krawędzi
+function setbackForAzimuth(az) {
+    const a = ((az % 360) + 360) % 360;
+    const front = parseFloat(document.getElementById('sb_front').value) || 0; // S
+    const back  = parseFloat(document.getElementById('sb_back').value)  || 0; // N
+    const left  = parseFloat(document.getElementById('sb_left').value)  || 0; // E
+    const right = parseFloat(document.getElementById('sb_right').value) || 0; // W
 
-    // to local metres
-    const pts = latlngs.map(p => ({ x: p[1] * mPerLng, y: p[0] * mPerLat }));
-    const n = pts.length;
-
-    // signed area
-    let area = 0;
-    for (let i = 0; i < n; i++) {
-        const j = (i+1) % n;
-        area += (pts[j].x - pts[i].x) * (pts[j].y + pts[i].y);
-    }
-    const sign = area > 0 ? -1 : 1;
-
-    const result = [];
-    for (let i = 0; i < n; i++) {
-        const a = pts[(i-1+n) % n];
-        const b = pts[i];
-        const c = pts[(i+1) % n];
-
-        const ab = { x: b.x-a.x, y: b.y-a.y };
-        const ab_len = Math.hypot(ab.x, ab.y);
-        if (ab_len < 1e-9) { result.push(b); continue; }
-        const n_ab = { x: sign*ab.y/ab_len, y: -sign*ab.x/ab_len };
-
-        const bc = { x: c.x-b.x, y: c.y-b.y };
-        const bc_len = Math.hypot(bc.x, bc.y);
-        if (bc_len < 1e-9) { result.push(b); continue; }
-        const n_bc = { x: sign*bc.y/bc_len, y: -sign*bc.x/bc_len };
-
-        const bis = { x: n_ab.x + n_bc.x, y: n_ab.y + n_bc.y };
-        const bisLen = Math.hypot(bis.x, bis.y);
-        if (bisLen < 1e-6) {
-            result.push({ x: b.x + n_ab.x*distMeters, y: b.y + n_ab.y*distMeters });
-            continue;
-        }
-        const dot = n_ab.x * bis.x/bisLen + n_ab.y * bis.y/bisLen;
-        const sc  = Math.abs(dot) > 0.15 ? distMeters/dot : distMeters*4;
-        result.push({ x: b.x + bis.x/bisLen * sc, y: b.y + bis.y/bisLen * sc });
-    }
-
-    return result.map(p => [p.y / mPerLat, p.x / mPerLng]);
+    // Interpoluj kątem: wagi dla czterech kierunków
+    const toRad = d => d * Math.PI / 180;
+    const cos = Math.cos, sin = Math.sin;
+    const na = toRad(a);
+    // wN, wE, wS, wW — składowe kierunków karynalnych
+    const wN = Math.max(0,  cos(na));   // 0°
+    const wE = Math.max(0,  sin(na));   // 90°
+    const wS = Math.max(0, -cos(na));   // 180°
+    const wW = Math.max(0, -sin(na));   // 270°
+    const tot = wN + wE + wS + wW || 1;
+    return (back*wN + left*wE + front*wS + right*wW) / tot;
 }
 
 // Rotate a set of corners around a center
@@ -279,7 +266,7 @@ function buildHouseCorners(lat, lng, wMeters, hMeters, rotDeg) {
 // ================================================================
 // Map setup
 // ================================================================
-let map, plotPolygon, setbackPolygon, houseLayer, houseMarker;
+let map, plotPolygon, setbackLayers = [], houseLayer, houseMarker;
 let houseLat = null, houseLng = null;
 let plotLatLngs = [];
 
@@ -408,29 +395,91 @@ function updateHouseRect() {
 }
 
 function updateSetbackLayer() {
+    // Usuń stare warstwy
+    setbackLayers.forEach(l => map.removeLayer(l));
+    setbackLayers = [];
+
     if (!plotLatLngs.length) return;
 
-    const sb = Math.min(
-        parseFloat(document.getElementById('sb_front').value) || 0,
-        parseFloat(document.getElementById('sb_back').value) || 0,
-        parseFloat(document.getElementById('sb_left').value) || 0,
-        parseFloat(document.getElementById('sb_right').value) || 0,
-    );
+    const refLat  = plotLatLngs[0][0];
+    const mPerLat = 111320;
+    const mPerLng = 111320 * Math.cos(refLat * Math.PI / 180);
 
-    if (setbackPolygon) map.removeLayer(setbackPolygon);
+    // Konwersja do metrów lokalnych
+    const pts = plotLatLngs.map(p => ({
+        x: p[1] * mPerLng,  // easting
+        y: p[0] * mPerLat,  // northing
+    }));
+    const n = pts.length;
 
-    if (sb <= 0) return;
+    // Pole ze znakiem — poprawna formuła Gaussa/shoelace
+    // x=easting (→), y=northing (↑) — standard math coord
+    // CCW polygon ma dodatnie pole
+    let area = 0;
+    for (let i = 0; i < n; i++) {
+        const j = (i+1) % n;
+        area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+    }
+    const isCCW = area > 0;
 
-    const offsetPts = offsetPolygonWGS84(plotLatLngs, sb);
-    if (offsetPts.length < 3) return;
+    for (let i = 0; i < n; i++) {
+        const j = (i+1) % n;
+        const A = pts[i], B = pts[j];
+        const dx = B.x - A.x, dy = B.y - A.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 0.5) continue; // pomijaj bardzo krótkie krawędzie
 
-    setbackPolygon = L.polygon(offsetPts, {
-        color: '#f97316',
-        weight: 2,
-        dashArray: '8 5',
-        fillColor: '#6366f1',
-        fillOpacity: 0.04,
-    }).addTo(map);
+        // Zewnętrzna normalna — dla CCW prawy obrót: (dy, -dx)/len
+        // Dla CW lewy obrót: (-dy, dx)/len
+        const outNx = isCCW ?  dy/len : -dy/len;
+        const outNy = isCCW ? -dx/len :  dx/len;
+
+        // Azymut zewnętrznej normalnej (0=N, 90=E, 180=S, 270=W)
+        // atan2(east, north) = atan2(outNx, outNy)
+        const azimuth = (Math.atan2(outNx, outNy) * 180 / Math.PI + 360) % 360;
+
+        const dist = setbackForAzimuth(azimuth);
+        if (dist <= 0) continue;
+
+        // Wewnętrzna normalna (do środka działki)
+        const inNx = -outNx, inNy = -outNy;
+
+        // Przesuń krawędź do środka
+        const A2 = { x: A.x + inNx * dist, y: A.y + inNy * dist };
+        const B2 = { x: B.x + inNx * dist, y: B.y + inNy * dist };
+
+        const ll_A2 = [A2.y / mPerLat, A2.x / mPerLng];
+        const ll_B2 = [B2.y / mPerLat, B2.x / mPerLng];
+
+        // Linia zabudowy dla tej krawędzi
+        const line = L.polyline([ll_A2, ll_B2], {
+            color: '#f97316', weight: 2.5, dashArray: '10 6', opacity: 0.9,
+        }).addTo(map);
+        setbackLayers.push(line);
+
+        // Etykieta w środku krawędzi
+        const midLat = (ll_A2[0] + ll_B2[0]) / 2;
+        const midLng = (ll_A2[1] + ll_B2[1]) / 2;
+        const name = azimuthToName(azimuth);
+        const labelIcon = L.divIcon({
+            html: `<div style="
+                background: rgba(249,115,22,0.92);
+                color: #fff;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 2px 6px;
+                border-radius: 4px;
+                white-space: nowrap;
+                box-shadow: 0 1px 3px rgba(0,0,0,.3);
+                pointer-events: none;
+            ">${name} — ${dist}m</div>`,
+            iconSize: [120, 18],
+            iconAnchor: [60, 9],
+            className: '',
+        });
+        const lbl = L.marker([midLat, midLng], { icon: labelIcon, interactive: false }).addTo(map);
+        setbackLayers.push(lbl);
+    }
 }
 
 // Oblicz punkt w odległości distM od (lat,lng) w kierunku bearingDeg
