@@ -7,6 +7,7 @@ use App\Models\Estimate;
 use App\Models\Offer;
 use App\Models\Document;
 use App\Models\Milestone;
+use App\Models\TimelineEntry;
 use Illuminate\Http\Request;
 
 class DashboardController extends Controller
@@ -32,10 +33,16 @@ class DashboardController extends Controller
 
         $categories = BudgetCategory::where('user_id', $user->id)->withSum(['items as spent' => fn($q) => $q->where('type','expense')], 'actual_amount')->get();
 
+        $recentTimeline = TimelineEntry::where('user_id', $user->id)
+            ->orderBy('entry_date', 'desc')
+            ->take(8)
+            ->get();
+
         return view('dashboard.index', compact(
             'totalIncome', 'totalExpense', 'totalPlanned',
             'documentsCount', 'offersCount', 'estimatesCount',
-            'recentDocs', 'upcomingMilestones', 'recentOffers', 'categories'
+            'recentDocs', 'upcomingMilestones', 'recentOffers', 'categories',
+            'recentTimeline'
         ));
     }
 }

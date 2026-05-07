@@ -9,10 +9,12 @@ use App\Http\Controllers\EstimateItemController;
 use App\Http\Controllers\OfferController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\PlotController;
+use App\Http\Controllers\MeetingController;
 use App\Http\Controllers\IdeaController;
 use App\Http\Controllers\IdeaCategoryController;
 use App\Http\Controllers\MilestoneController;
 use App\Http\Controllers\ContactController;
+use App\Http\Controllers\TimelineController;
 use Illuminate\Support\Facades\Route;
 
 Route::get("/", fn() => view("landing"))->name("home");
@@ -36,6 +38,11 @@ Route::middleware(["auth", "verified"])->group(function () {
     Route::resource("ideas", IdeaController::class);
     Route::resource("milestones", MilestoneController::class);
     Route::resource("contacts", ContactController::class);
+    Route::resource("meetings", MeetingController::class);
+
+    Route::get('/timeline', [TimelineController::class, 'index'])->name('timeline');
+    Route::post('/timeline', [TimelineController::class, 'store'])->name('timeline.store');
+    Route::delete('/timeline/{timelineEntry}', [TimelineController::class, 'destroy'])->name('timeline.destroy');
 
     Route::get("/profile", [ProfileController::class, "edit"])->name("profile.edit");
     Route::patch("/profile", [ProfileController::class, "update"])->name("profile.update");

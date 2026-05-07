@@ -33,6 +33,9 @@
             <a href="{{ route('dashboard') }}" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{ request()->routeIs('dashboard') ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white' }}">
                 <span class="text-base">🏠</span><span>Dashboard</span>
             </a>
+            <a href="{{ route('timeline') }}" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{ request()->routeIs('timeline*') ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white' }}">
+                <span class="text-base">📰</span><span>Oś czasu</span>
+            </a>
 
             <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider px-3 pb-1 pt-4">Finanse</div>
             <a href="{{ route('budget.index') }}" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{ request()->routeIs('budget*') ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white' }}">
@@ -57,6 +60,9 @@
             </a>
 
             <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider px-3 pb-1 pt-4">Inne</div>
+            <a href="{{ route('meetings.index') }}" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{ request()->routeIs('meetings*') ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white' }}">
+                <span class="text-base">🤝</span><span>Spotkania</span>
+            </a>
             <a href="{{ route('ideas.index') }}" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{ request()->routeIs('ideas*') ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white' }}">
                 <span class="text-base">💡</span><span>Pomysły</span>
             </a>

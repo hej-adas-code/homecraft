@@ -153,4 +153,43 @@
     </div>
 
 </div>
+
+{{-- Ostatnie aktywności (oś czasu) --}}
+@if($recentTimeline->isNotEmpty())
+<div class="mt-8 bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-gray-800">Ostatnie aktywności</h2>
+        <a href="{{ route('timeline') }}" class="text-xs text-indigo-600 hover:underline">→ oś czasu</a>
+    </div>
+    @php
+    $typeConfig = [
+        'milestone'   => ['color' => 'bg-indigo-500', 'label' => 'Etap',     'icon' => '📅'],
+        'budget_item' => ['color' => 'bg-green-500',  'label' => 'Budżet',   'icon' => '💰'],
+        'offer'       => ['color' => 'bg-yellow-400', 'label' => 'Oferta',   'icon' => '🤝'],
+        'document'    => ['color' => 'bg-blue-500',   'label' => 'Dokument', 'icon' => '📁'],
+        'idea'        => ['color' => 'bg-purple-500', 'label' => 'Pomysł',   'icon' => '💡'],
+        'note'        => ['color' => 'bg-gray-400',   'label' => 'Notatka',  'icon' => '📝'],
+        'photo'       => ['color' => 'bg-pink-500',   'label' => 'Zdjęcie',  'icon' => '📷'],
+    ];
+    @endphp
+    <div class="space-y-3">
+        @foreach($recentTimeline as $entry)
+        @php $cfg = $typeConfig[$entry->type] ?? $typeConfig['note']; @endphp
+        <div class="flex items-center gap-3">
+            <div class="w-7 h-7 rounded-full {{ $cfg['color'] }} flex items-center justify-center text-white text-xs flex-shrink-0">
+                {{ $cfg['icon'] }}
+            </div>
+            <div class="flex-1 min-w-0">
+                <p class="text-sm text-gray-800 truncate font-medium">{{ $entry->entry_title }}</p>
+                <p class="text-xs text-gray-400">{{ $entry->entry_date->format('d.m.Y H:i') }} · {{ $cfg['label'] }}</p>
+            </div>
+        </div>
+        @endforeach
+    </div>
+    <div class="mt-3 pt-3 border-t border-gray-100">
+        <a href="{{ route('timeline') }}" class="text-xs text-indigo-600 hover:underline">Zobacz pełną oś czasu →</a>
+    </div>
+</div>
+@endif
+
 </x-layouts.app>
